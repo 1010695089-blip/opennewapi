@@ -1538,6 +1538,15 @@ docker run -d -p 3700:3700 -v ./data:/app/data -v ./config:/app/config openhinge
             <div class="option-card-desc">Paste an API key manually</div>
           </div>
         </button>
+        ${type === 'openai' ? `
+        <button class="option-card" onclick="OS.showOpenAIOauthForm()">
+          <div class="option-card-icon"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0110 0v4"/></svg></div>
+          <div class="option-card-text">
+            <div class="option-card-title">Paste OAuth Token</div>
+            <div class="option-card-desc">Import ChatGPT/Codex auth manually</div>
+          </div>
+        </button>
+        ` : ''}
       </div>
     `);
   }
@@ -1584,6 +1593,75 @@ docker run -d -p 3700:3700 -v ./data:/app/data -v ./config:/app/config openhinge
         <button type="submit" class="btn btn-primary" style="width:100%;margin-top:8px">Add Provider</button>
       </form>
     `);
+  }
+
+  function showOpenAIOauthForm() {
+    openModal('Add OpenAI — OAuth Token', `
+      <form onsubmit="OS.saveOpenAIOauth(event)" id="openai-oauth-form">
+        <p class="text-muted" style="margin-bottom:12px;font-size:13px">
+          Paste your Codex <code>auth.json</code> contents for best results. A raw access token also works until it expires.
+        </p>
+        <div class="form-group"><label class="form-label">Name</label><input name="name" value="OpenAI (ChatGPT)" placeholder="e.g. OpenAI ChatGPT"></div>
+        <div class="form-group">
+          <label class="form-label">Codex auth JSON or Access Token</label>
+          <textarea name="token_blob" class="input-mono" rows="8" placeholder='{"auth_mode":"chatgpt","tokens":{"access_token":"...","refresh_token":"...","account_id":"..."}}' required></textarea>
+        </div>
+        <div class="form-row">
+          <div class="form-group"><label class="form-label">Account ID</label><input name="account_id" class="input-mono" placeholder="Optional if present in auth JSON"></div>
+          <div class="form-group"><label class="form-label">Priority</label><input name="priority" type="number" value="50"></div>
+        </div>
+        <div class="form-group">
+          <label class="form-label">Default Model</label>
+          <input name="model" value="gpt-5.4-mini" class="input-mono">
+        </div>
+        <button type="submit" class="btn btn-primary" style="width:100%;margin-top:8px">Add OAuth Provider</button>
+      </form>
+    `);
+  }
+
+  async function saveOpenAIOauth(e) {
+    e.preventDefault();
+    const f = new FormData(e.target);
+    const blob = String(f.get('token_blob') || '').trim();
+    const credentials = {
+      client_id: 'app_EMoamEEZ73f0CkXaXp7hrann',
+      source: 'manual_oauth',
+    };
+
+    try {
+      if (blob.startsWith('{')) {
+        const parsed = JSON.parse(blob);
+        const tokens = parsed.tokens || parsed;
+        credentials.oauth_token = tokens.access_token || tokens.oauth_token || parsed.access_token || parsed.oauth_token;
+        credentials.refresh_token = tokens.refresh_token || parsed.refresh_token || '';
+        credentials.account_id = String(f.get('account_id') || tokens.account_id || parsed.account_id || '');
+        const expiresAt = tokens.expires_at || tokens.expiresAt || parsed.expires_at || parsed.expiresAt;
+        if (expiresAt) credentials.expires_at = String(expiresAt);
+      } else {
+        credentials.oauth_token = blob;
+        credentials.account_id = String(f.get('account_id') || '');
+      }
+    } catch (err) {
+      toast(`Invalid auth JSON: ${err.message}`, 'error');
+      return;
+    }
+
+    if (!credentials.oauth_token) {
+      toast('Missing access token', 'error');
+      return;
+    }
+    if (!credentials.account_id) delete credentials.account_id;
+    if (!credentials.refresh_token) delete credentials.refresh_token;
+
+    const model = f.get('model') || 'gpt-5.4-mini';
+    await api('/admin/providers', { method: 'POST', body: {
+      name: f.get('name') || 'OpenAI (ChatGPT)',
+      type: 'openai',
+      credentials,
+      provider_config: { default_model: model },
+      priority: parseInt(f.get('priority')) || 0,
+    }});
+    closeModal(); toast('OpenAI OAuth upstream added', 'success'); loaders.providers();
   }
 
   async function claudeOAuthLogin() {
@@ -2724,7 +2802,7 @@ docker run -d -p 3700:3700 -v ./data:/app/data -v ./config:/app/config openhinge
   return {
     closeModal, toast, navigate, welcomeSubmit, welcomeGo,
     setLanguage,
-    addProviderModal, addProviderStep2, showApiKeyForm, showClaudeOauthForm, saveClaudeOauth, claudeOAuthLogin, saveProvider, editProviderModal, updateProvider, deleteProvider, healthCheck, healthCheckOne, fetchModels, onProviderTypeChange, quickAdd, openApiPage,
+    addProviderModal, addProviderStep2, showApiKeyForm, showOpenAIOauthForm, saveOpenAIOauth, showClaudeOauthForm, saveClaudeOauth, claudeOAuthLogin, saveProvider, editProviderModal, updateProvider, deleteProvider, healthCheck, healthCheckOne, fetchModels, onProviderTypeChange, quickAdd, openApiPage,
     addSoulModal, saveSoul, editSoulModal, deleteSoul, onSoulProviderChange,
     createKeyModal, createApiKeyForm, createOpenClawKeyForm, saveOpenClawKey, saveKey, revokeKey, reactivateKey, deleteKey, toggleAllSouls, autoConnect, disconnectApp,
     saveCloudflare, saveSettings, changePassword, scrollDoc,
