@@ -38,6 +38,29 @@ export class OpenAIProvider extends BaseProvider {
     return h;
   }
 
+  private responsesTools(params: ChatRequest): unknown[] | undefined {
+    if (!params.tools?.length) return undefined;
+    return params.tools.map((tool) => {
+      if (tool.function) {
+        return {
+          type: 'function',
+          name: tool.function.name,
+          description: tool.function.description || '',
+          parameters: tool.function.parameters || { type: 'object', properties: {} },
+        };
+      }
+      if (tool.name) {
+        return {
+          type: tool.type || 'function',
+          name: tool.name,
+          description: tool.description || '',
+          parameters: tool.input_schema || { type: 'object', properties: {} },
+        };
+      }
+      return tool;
+    });
+  }
+
   defaultModel(): string {
     if (this.isChatGPT) {
       return (this.config.config.default_model as string) || 'gpt-5.4-mini';
@@ -119,15 +142,37 @@ export class OpenAIProvider extends BaseProvider {
     const systemMsg = params.messages.find(m => m.role === 'system');
     const input = params.messages
       .filter(m => m.role !== 'system')
-      .map(m => ({ role: m.role, content: m.content }));
+      .map(m => {
+        if (m.role === 'tool') {
+          return {
+            type: 'function_call_output',
+            call_id: m.tool_call_id || '',
+            output: m.content,
+          };
+        }
+        if (m.role === 'assistant' && m.tool_calls?.length) {
+          return m.tool_calls.map(tc => ({
+            type: 'function_call',
+            call_id: tc.id,
+            name: tc.function.name,
+            arguments: tc.function.arguments,
+          }));
+        }
+        return { role: m.role, content: m.content };
+      })
+      .flat();
 
-    return JSON.stringify({
+    const body: Record<string, unknown> = {
       model: params.model || this.defaultModel(),
       instructions: systemMsg?.content || 'You are a helpful assistant.',
       input,
       store: false,
       stream: true,
-    });
+    };
+    const tools = this.responsesTools(params);
+    if (tools?.length) body.tools = tools;
+    if (params.tool_choice) body.tool_choice = params.tool_choice;
+    return JSON.stringify(body);
   }
 
   private async chatGPTChat(params: ChatRequest): Promise<ChatResponse> {
@@ -151,6 +196,7 @@ export class OpenAIProvider extends BaseProvider {
     let inputTokens = 0;
     let outputTokens = 0;
     let responseId = generateId();
+    const toolCalls = new Map<string, ToolCall>();
 
     try {
       while (true) {
@@ -170,6 +216,28 @@ export class OpenAIProvider extends BaseProvider {
             const event = JSON.parse(raw);
             if (event.type === 'response.output_text.delta') {
               fullText += event.delta || '';
+            } else if (event.type === 'response.output_item.added' && event.item?.type === 'function_call') {
+              const id = event.item.call_id || event.item.id || generateId();
+              toolCalls.set(id, {
+                id,
+                type: 'function',
+                function: { name: event.item.name || '', arguments: event.item.arguments || '' },
+              });
+            } else if (event.type === 'response.function_call_arguments.delta') {
+              const id = event.call_id || event.item_id || '';
+              const existing = toolCalls.get(id);
+              if (existing) existing.function.arguments += event.delta || '';
+            } else if (event.type === 'response.function_call_arguments.done') {
+              const id = event.call_id || event.item_id || '';
+              const existing = toolCalls.get(id);
+              if (existing && typeof event.arguments === 'string') existing.function.arguments = event.arguments;
+            } else if (event.type === 'response.output_item.done' && event.item?.type === 'function_call') {
+              const id = event.item.call_id || event.item.id || generateId();
+              toolCalls.set(id, {
+                id,
+                type: 'function',
+                function: { name: event.item.name || '', arguments: event.item.arguments || '{}' },
+              });
             } else if (event.type === 'response.completed') {
               responseId = event.response?.id || responseId;
               inputTokens = event.response?.usage?.input_tokens || 0;
@@ -188,7 +256,8 @@ export class OpenAIProvider extends BaseProvider {
       content: fullText,
       input_tokens: inputTokens,
       output_tokens: outputTokens,
-      finish_reason: 'stop',
+      finish_reason: toolCalls.size > 0 ? 'tool_calls' : 'stop',
+      tool_calls: toolCalls.size > 0 ? Array.from(toolCalls.values()) : undefined,
     };
   }
 
@@ -209,6 +278,7 @@ export class OpenAIProvider extends BaseProvider {
     const decoder = new TextDecoder();
     let buffer = '';
     const id = generateId();
+    const toolCalls = new Map<string, ToolCall>();
 
     try {
       while (true) {
@@ -228,11 +298,34 @@ export class OpenAIProvider extends BaseProvider {
             const event = JSON.parse(raw);
             if (event.type === 'response.output_text.delta' && event.delta) {
               yield { id, model, delta: event.delta, finish_reason: null };
+            } else if (event.type === 'response.output_item.added' && event.item?.type === 'function_call') {
+              const callId = event.item.call_id || event.item.id || generateId();
+              toolCalls.set(callId, {
+                id: callId,
+                type: 'function',
+                function: { name: event.item.name || '', arguments: event.item.arguments || '' },
+              });
+            } else if (event.type === 'response.function_call_arguments.delta') {
+              const callId = event.call_id || event.item_id || '';
+              const existing = toolCalls.get(callId);
+              if (existing) existing.function.arguments += event.delta || '';
+            } else if (event.type === 'response.function_call_arguments.done') {
+              const callId = event.call_id || event.item_id || '';
+              const existing = toolCalls.get(callId);
+              if (existing && typeof event.arguments === 'string') existing.function.arguments = event.arguments;
+            } else if (event.type === 'response.output_item.done' && event.item?.type === 'function_call') {
+              const callId = event.item.call_id || event.item.id || generateId();
+              toolCalls.set(callId, {
+                id: callId,
+                type: 'function',
+                function: { name: event.item.name || '', arguments: event.item.arguments || '{}' },
+              });
             } else if (event.type === 'response.completed') {
               yield {
-                id, model, delta: '', finish_reason: 'stop',
+                id, model, delta: '', finish_reason: toolCalls.size > 0 ? 'tool_calls' : 'stop',
                 input_tokens: event.response?.usage?.input_tokens,
                 output_tokens: event.response?.usage?.output_tokens,
+                tool_calls: toolCalls.size > 0 ? Array.from(toolCalls.values()) : undefined,
               };
             }
           } catch { /* skip */ }

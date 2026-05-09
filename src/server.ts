@@ -14,6 +14,7 @@ import { adminAuthMiddleware } from './middleware/admin-auth.js';
 import { chatRoutes } from './routes/v1/chat.js';
 import { messagesRoutes } from './routes/v1/messages.js';
 import { modelsRoutes } from './routes/v1/models.js';
+import { responsesRoutes } from './routes/v1/responses.js';
 import { providerAdminRoutes } from './routes/admin/providers.js';
 import { soulAdminRoutes } from './routes/admin/souls.js';
 import { keyAdminRoutes } from './routes/admin/keys.js';
@@ -69,6 +70,7 @@ export async function createServer(config: Config) {
   await app.register(chatRoutes);
   await app.register(messagesRoutes);
   await app.register(modelsRoutes);
+  await app.register(responsesRoutes);
 
   // Public system routes (health, auth status, login, setup)
   await app.register((r) => systemAdminRoutes(r, config));
