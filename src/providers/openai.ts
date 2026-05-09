@@ -41,25 +41,28 @@ export class OpenAIProvider extends BaseProvider {
   private responsesTools(params: ChatRequest): unknown[] | undefined {
     if (!params.tools?.length) return undefined;
     return params.tools.map((tool) => {
+      const name = tool.function?.name || tool.name;
+      if (name) {
+        return {
+          type: 'function',
+          name,
+          description: tool.function?.description || tool.description || '',
+          strict: (tool as any).strict ?? false,
+          parameters: tool.function?.parameters || tool.input_schema || (tool as any).parameters || { type: 'object', properties: {} },
+        };
+      }
       if (tool.function) {
         return {
           type: 'function',
           name: tool.function.name,
           description: tool.function.description || '',
-          input_schema: tool.function.parameters || { type: 'object', properties: {} },
-        };
-      }
-      if (tool.name) {
-        return {
-          type: tool.type || 'function',
-          name: tool.name,
-          description: tool.description || '',
-          input_schema: tool.input_schema || (tool as any).parameters || { type: 'object', properties: {} },
+          strict: (tool as any).strict ?? false,
+          parameters: tool.function.parameters || { type: 'object', properties: {} },
         };
       }
       if ((tool as any).parameters) {
         const { parameters, ...rest } = tool as any;
-        return { ...rest, input_schema: parameters };
+        return { ...rest, parameters };
       }
       return tool;
     });
