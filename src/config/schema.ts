@@ -2,7 +2,7 @@ import { z } from 'zod';
 
 export const configSchema = z.object({
   server: z.object({
-    host: z.string().default('127.0.0.1'),
+    host: z.string().default('0.0.0.0'),
     port: z.number().int().min(1).max(65535).default(3700),
   }).default({}),
 

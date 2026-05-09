@@ -9,10 +9,10 @@ loadDotenv();
 
 export function loadConfig(): Config {
   // Start with env vars
-  const raw: Record<string, unknown> = {
+  const envConfig: Record<string, unknown> = {
     server: {
-      host: process.env.OPENHINGE_HOST,
-      port: process.env.OPENHINGE_PORT ? Number(process.env.OPENHINGE_PORT) : undefined,
+      host: process.env.OPENHINGE_HOST || process.env.HOST,
+      port: process.env.OPENHINGE_PORT ? Number(process.env.OPENHINGE_PORT) : process.env.PORT ? Number(process.env.PORT) : undefined,
     },
     db: {
       path: process.env.OPENHINGE_DB_PATH,
@@ -27,6 +27,7 @@ export function loadConfig(): Config {
       level: process.env.OPENHINGE_LOG_LEVEL,
     },
   };
+  const raw: Record<string, unknown> = {};
 
   // Merge with JSON config file — auto-create on first run
   const configDir = resolve(process.cwd(), 'config');
@@ -43,7 +44,7 @@ export function loadConfig(): Config {
     // First run — auto-generate config (no admin token, user sets password in dashboard)
     const encryptionKey = randomBytes(32).toString('hex');
     const newConfig = {
-      server: { host: '127.0.0.1', port: 3700 },
+      server: { host: '0.0.0.0', port: 3700 },
       auth: {},
       encryption: { key: encryptionKey },
     };
@@ -68,6 +69,10 @@ export function loadConfig(): Config {
 
     deepMerge(raw, newConfig);
   }
+
+  // Environment variables must win over generated/local config files in hosted
+  // environments such as Railway.
+  deepMerge(raw, envConfig);
 
   // Strip undefined values before validation
   stripUndefined(raw);
