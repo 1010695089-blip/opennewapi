@@ -46,7 +46,7 @@ export class OpenAIProvider extends BaseProvider {
           type: 'function',
           name: tool.function.name,
           description: tool.function.description || '',
-          parameters: tool.function.parameters || { type: 'object', properties: {} },
+          input_schema: tool.function.parameters || { type: 'object', properties: {} },
         };
       }
       if (tool.name) {
@@ -54,8 +54,12 @@ export class OpenAIProvider extends BaseProvider {
           type: tool.type || 'function',
           name: tool.name,
           description: tool.description || '',
-          parameters: tool.input_schema || { type: 'object', properties: {} },
+          input_schema: tool.input_schema || (tool as any).parameters || { type: 'object', properties: {} },
         };
+      }
+      if ((tool as any).parameters) {
+        const { parameters, ...rest } = tool as any;
+        return { ...rest, input_schema: parameters };
       }
       return tool;
     });
