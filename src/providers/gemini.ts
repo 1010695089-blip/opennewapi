@@ -1,0 +1,397 @@
+import { BaseProvider } from './base.js';
+import type { ChatRequest, ChatResponse, ChatChunk, HealthStatus } from './types.js';
+import { ProviderError } from '../utils/errors.js';
+import { generateId } from '../utils/crypto.js';
+import { logger } from '../utils/logger.js';
+
+export const GEMINI_MODELS = [
+  'gemini-3-pro-preview-high',
+  'gemini-3-pro-preview-low',
+  'gemini-3-pro-preview',
+  'gemini-3-flash-preview-high',
+  'gemini-3-flash-preview-medium',
+  'gemini-3-flash-preview-low',
+  'gemini-3-flash-preview-minimal',
+  'gemini-3-flash-preview',
+  'gemini-3.1-pro-preview-high',
+  'gemini-3.1-pro-preview-medium',
+  'gemini-3.1-pro-preview-low',
+  'gemini-3.1-flash-lite-preview-high',
+  'gemini-3.1-flash-lite-preview-medium',
+  'gemini-3.1-flash-lite-preview-low',
+  'gemini-3.1-flash-lite-preview-minimal',
+  'gemini-3.1-flash-lite-preview',
+  'gemini-2.5-pro',
+  'gemini-2.5-flash',
+  'gemini-2.5-flash-lite',
+] as const;
+
+const GEMINI_MODEL_ALIASES: Record<string, { model: string; thinkingLevel?: string }> = {
+  'gemini-3.1-pro-preview-high': { model: 'gemini-3-pro-preview', thinkingLevel: 'high' },
+  'gemini-3.1-pro-preview-medium': { model: 'gemini-3-pro-preview', thinkingLevel: 'high' },
+  'gemini-3.1-pro-preview-low': { model: 'gemini-3-pro-preview', thinkingLevel: 'low' },
+  'gemini-3-pro-preview-high': { model: 'gemini-3-pro-preview', thinkingLevel: 'high' },
+  'gemini-3-pro-preview-medium': { model: 'gemini-3-pro-preview', thinkingLevel: 'high' },
+  'gemini-3-pro-preview-low': { model: 'gemini-3-pro-preview', thinkingLevel: 'low' },
+  'gemini-3-flash-preview-high': { model: 'gemini-3-flash-preview', thinkingLevel: 'high' },
+  'gemini-3-flash-preview-medium': { model: 'gemini-3-flash-preview', thinkingLevel: 'medium' },
+  'gemini-3-flash-preview-low': { model: 'gemini-3-flash-preview', thinkingLevel: 'low' },
+  'gemini-3-flash-preview-minimal': { model: 'gemini-3-flash-preview', thinkingLevel: 'minimal' },
+  'gemini-3.1-flash-lite-preview-high': { model: 'gemini-3.1-flash-lite-preview', thinkingLevel: 'high' },
+  'gemini-3.1-flash-lite-preview-medium': { model: 'gemini-3.1-flash-lite-preview', thinkingLevel: 'medium' },
+  'gemini-3.1-flash-lite-preview-low': { model: 'gemini-3.1-flash-lite-preview', thinkingLevel: 'low' },
+  'gemini-3.1-flash-lite-preview-minimal': { model: 'gemini-3.1-flash-lite-preview', thinkingLevel: 'minimal' },
+};
+
+export class GeminiProvider extends BaseProvider {
+  readonly type = 'gemini';
+
+  private get isOAuth(): boolean {
+    return !!this.config.credentials.oauth_token;
+  }
+
+  private get oauthData(): { token: string; projectId: string } {
+    const raw = this.config.credentials.oauth_token || '';
+    if (raw.startsWith('{')) {
+      try {
+        const parsed = JSON.parse(raw);
+        return { token: parsed.token || parsed.access_token || '', projectId: parsed.projectId || '' };
+      } catch { /* not JSON */ }
+    }
+    return { token: raw, projectId: '' };
+  }
+
+  private get apiKey(): string {
+    return this.config.credentials.api_key || '';
+  }
+
+  private get baseUrl(): string {
+    if (this.isOAuth) {
+      return this.config.base_url || 'https://cloudcode-pa.googleapis.com';
+    }
+    return this.config.base_url || 'https://generativelanguage.googleapis.com/v1beta';
+  }
+
+  protected buildAuthHeaders(): Record<string, string> {
+    return this.authHeaders();
+  }
+
+  private authHeaders(): Record<string, string> {
+    if (this.isOAuth) {
+      const { token } = this.oauthData;
+      return {
+        'content-type': 'application/json',
+        'authorization': `Bearer ${token}`,
+        'user-agent': 'google-cloud-sdk vscode_cloudshelleditor/0.1',
+        'x-goog-api-client': 'gl-node/22.17.0',
+      };
+    }
+    return {
+      'content-type': 'application/json',
+      'x-goog-api-key': this.apiKey,
+    };
+  }
+
+  defaultModel(): string {
+    return (this.config.config.default_model as string) || 'gemini-3-flash-preview';
+  }
+
+  // Refresh Google OAuth token using stored refresh_token
+  async refreshToken(): Promise<boolean> {
+    // Strategy 1: Read from Google ADC file (gcloud keeps this fresh)
+    try {
+      const { readFileSync } = await import('node:fs');
+      const { join } = await import('node:path');
+      const { homedir } = await import('node:os');
+      const adcPath = join(homedir(), '.config', 'gcloud', 'application_default_credentials.json');
+      const adc = JSON.parse(readFileSync(adcPath, 'utf-8'));
+      if (adc.refresh_token && adc.client_id && adc.refresh_token !== this.config.credentials.refresh_token) {
+        // ADC has a newer refresh token — use it
+        this.config.credentials.refresh_token = adc.refresh_token;
+        if (adc.client_id) this.config.credentials.client_id = adc.client_id;
+        if (adc.client_secret) this.config.credentials.client_secret = adc.client_secret;
+        logger.info({ id: this.id }, 'Gemini refresh token updated from Google ADC');
+      }
+    } catch { /* No ADC file */ }
+
+    // Strategy 2: OAuth refresh_token flow
+    const refreshToken = this.config.credentials.refresh_token;
+    const clientId = this.config.credentials.client_id;
+    const clientSecret = this.config.credentials.client_secret;
+    if (!refreshToken || !clientId) return false;
+
+    try {
+      const params: Record<string, string> = {
+        grant_type: 'refresh_token',
+        refresh_token: refreshToken,
+        client_id: clientId,
+      };
+      if (clientSecret) params.client_secret = clientSecret;
+
+      const res = await fetch('https://oauth2.googleapis.com/token', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+        body: new URLSearchParams(params).toString(),
+      });
+
+      if (!res.ok) return false;
+
+      const data = await res.json() as any;
+      const newToken = data.access_token;
+      if (!newToken) return false;
+
+      // Update oauth_token JSON with new access token
+      const { projectId } = this.oauthData;
+      this.config.credentials.oauth_token = JSON.stringify({ token: newToken, projectId });
+      if (data.expires_in) {
+        this.config.credentials.expires_at = String(Date.now() + data.expires_in * 1000);
+      }
+      // Google may return a new refresh_token (rare)
+      if (data.refresh_token) {
+        this.config.credentials.refresh_token = data.refresh_token;
+      }
+
+      this.persistCredentials();
+      return true;
+    } catch { return false; }
+  }
+
+  private toGeminiMessages(messages: ChatRequest['messages']) {
+    const systemMsg = messages.find(m => m.role === 'system');
+    const contents = messages.filter(m => m.role !== 'system').map(m => ({
+      role: m.role === 'assistant' ? 'model' : 'user',
+      parts: [{ text: m.content }],
+    }));
+    return { systemInstruction: systemMsg ? { parts: [{ text: systemMsg.content }] } : undefined, contents };
+  }
+
+  private resolveModel(model: string): { model: string; thinkingLevel?: string } {
+    return GEMINI_MODEL_ALIASES[model] || { model };
+  }
+
+  private applyThinkingConfig(
+    genConfig: Record<string, unknown>,
+    aliasThinkingLevel?: string,
+    requestThinking?: ChatRequest['thinking'],
+  ): void {
+    if (aliasThinkingLevel) {
+      genConfig.thinkingConfig = { thinkingLevel: aliasThinkingLevel };
+      return;
+    }
+
+    if (!requestThinking) return;
+    if (requestThinking.budget_tokens !== undefined) {
+      genConfig.thinkingConfig = { thinkingBudget: requestThinking.budget_tokens };
+    } else if (requestThinking.display) {
+      genConfig.thinkingConfig = { thinkingLevel: requestThinking.display };
+    }
+  }
+
+  private wrapOAuthBody(model: string, innerBody: Record<string, unknown>): string {
+    const { projectId } = this.oauthData;
+    return JSON.stringify({
+      model,
+      project: projectId,
+      request: innerBody,
+    });
+  }
+
+  private async throwProviderError(res: Response): Promise<never> {
+    const err = await res.text();
+    throw new ProviderError('gemini', `${res.status}: ${err}`, res.status);
+  }
+
+  async chat(params: ChatRequest): Promise<ChatResponse> {
+    const requestedModel = params.model || this.defaultModel();
+    const { model, thinkingLevel } = this.resolveModel(requestedModel);
+    const { systemInstruction, contents } = this.toGeminiMessages(params.messages);
+
+    const genConfig: Record<string, unknown> = {
+      maxOutputTokens: params.max_tokens || 4096,
+      temperature: params.temperature,
+      stopSequences: params.stop,
+    };
+    this.applyThinkingConfig(genConfig, thinkingLevel, params.thinking);
+    if (params.response_schema) {
+      genConfig.responseMimeType = 'application/json';
+      genConfig.responseSchema = params.response_schema;
+    }
+
+    const innerBody: Record<string, unknown> = {
+      contents,
+      generationConfig: genConfig,
+    };
+    if (systemInstruction) innerBody.systemInstruction = systemInstruction;
+
+    let url: string;
+    let body: string;
+
+    if (this.isOAuth) {
+      url = `${this.baseUrl}/v1internal:generateContent`;
+      body = this.wrapOAuthBody(model, innerBody);
+    } else {
+      url = `${this.baseUrl}/models/${model}:generateContent`;
+      body = JSON.stringify(innerBody);
+    }
+
+    const res = await this.fetchWithRefresh(url, {
+      method: 'POST',
+      headers: this.authHeaders(),
+      body,
+    });
+
+    if (!res.ok) {
+      await this.throwProviderError(res);
+    }
+
+    const raw = await res.json() as any;
+    // OAuth wraps in { response: { candidates, usageMetadata } }, API key returns directly
+    const data = raw.response || raw;
+    const candidate = data.candidates?.[0];
+    const text = candidate?.content?.parts?.map((p: any) => p.text).join('') || '';
+
+    return {
+      id: generateId(),
+      model: requestedModel,
+      content: text,
+      input_tokens: data.usageMetadata?.promptTokenCount || 0,
+      output_tokens: data.usageMetadata?.candidatesTokenCount || 0,
+      finish_reason: candidate?.finishReason || 'STOP',
+    };
+  }
+
+  async *chatStream(params: ChatRequest): AsyncGenerator<ChatChunk> {
+    const requestedModel = params.model || this.defaultModel();
+    const { model, thinkingLevel } = this.resolveModel(requestedModel);
+    const { systemInstruction, contents } = this.toGeminiMessages(params.messages);
+
+    const genConfig: Record<string, unknown> = {
+      maxOutputTokens: params.max_tokens || 4096,
+      temperature: params.temperature,
+    };
+    this.applyThinkingConfig(genConfig, thinkingLevel, params.thinking);
+
+    const innerBody: Record<string, unknown> = {
+      contents,
+      generationConfig: genConfig,
+    };
+    if (systemInstruction) innerBody.systemInstruction = systemInstruction;
+
+    let url: string;
+    let body: string;
+
+    if (this.isOAuth) {
+      url = `${this.baseUrl}/v1internal:streamGenerateContent?alt=sse`;
+      body = this.wrapOAuthBody(model, innerBody);
+    } else {
+      url = `${this.baseUrl}/models/${model}:streamGenerateContent?alt=sse`;
+      body = JSON.stringify(innerBody);
+    }
+
+    const res = await this.fetchWithRefresh(url, {
+      method: 'POST',
+      headers: this.authHeaders(),
+      body,
+    });
+
+    if (!res.ok) {
+      await this.throwProviderError(res);
+    }
+
+    const reader = res.body!.getReader();
+    const decoder = new TextDecoder();
+    let buffer = '';
+    const id = generateId();
+
+    try {
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split('\n');
+        buffer = lines.pop() || '';
+
+        for (const line of lines) {
+          if (!line.startsWith('data: ')) continue;
+          const raw = line.slice(6).trim();
+          if (!raw) continue;
+
+          try {
+            const rawEvent = JSON.parse(raw);
+            // OAuth wraps in { response: ... }, API key returns directly
+            const event = rawEvent.response || rawEvent;
+            const text = event.candidates?.[0]?.content?.parts?.map((p: any) => p.text).join('') || '';
+            const finish = event.candidates?.[0]?.finishReason;
+
+            if (text) {
+              yield { id, model: requestedModel, delta: text, finish_reason: null };
+            }
+            if (finish && finish !== 'STOP') {
+              yield { id, model: requestedModel, delta: '', finish_reason: finish };
+            }
+            if (event.usageMetadata) {
+              yield {
+                id, model: requestedModel, delta: '', finish_reason: finish || 'STOP',
+                input_tokens: event.usageMetadata.promptTokenCount,
+                output_tokens: event.usageMetadata.candidatesTokenCount,
+              };
+            }
+          } catch { /* skip */ }
+        }
+      }
+    } finally {
+      reader.releaseLock();
+    }
+  }
+
+  async healthCheck(): Promise<HealthStatus> {
+    const start = Date.now();
+    try {
+      if (this.isOAuth) {
+        // Use loadCodeAssist as a lightweight auth check — no generation quota consumed
+        const res = await this.fetchWithRefresh('https://cloudcode-pa.googleapis.com/v1internal:loadCodeAssist', {
+          method: 'POST',
+          headers: this.authHeaders(),
+          body: JSON.stringify({
+            metadata: { ideType: 'GEMINI_CLI', pluginType: 'GEMINI', platform: 'PLATFORM_UNSPECIFIED' },
+          }),
+        });
+        const latency = Date.now() - start;
+        // loadCodeAssist returns 200 if auth is valid (even if no project found)
+        if (res.ok) return { status: 'healthy', latency_ms: latency };
+        if (res.status === 401) return { status: 'down', latency_ms: latency, message: 'Token expired' };
+        if (res.status === 429) return { status: 'degraded', latency_ms: latency, message: 'Rate limited' };
+        return { status: 'down', latency_ms: latency, message: `HTTP ${res.status}` };
+      }
+
+      // API key mode — list models
+      const res = await fetch(`${this.baseUrl}/models`, { headers: this.authHeaders() });
+      const latency = Date.now() - start;
+      if (res.ok) return { status: 'healthy', latency_ms: latency };
+      return { status: 'down', latency_ms: latency, message: `HTTP ${res.status}` };
+    } catch (err: any) {
+      return { status: 'down', latency_ms: Date.now() - start, message: err.message };
+    }
+  }
+
+  async listModels(): Promise<string[]> {
+    const fallback = [...GEMINI_MODELS];
+    if (this.isOAuth || !this.apiKey) return fallback;
+
+    try {
+      const res = await fetch(`${this.baseUrl}/models`, { headers: this.authHeaders() });
+      if (!res.ok) return fallback;
+
+      const data = await res.json() as any;
+      const models = (data.models || [])
+        .filter((m: any) => (m.supportedGenerationMethods || []).includes('generateContent'))
+        .map((m: any) => String(m.name || '').replace(/^models\//, ''))
+        .filter((m: string) => m.startsWith('gemini-'));
+
+      return Array.from(new Set([...fallback, ...models]));
+    } catch {
+      return fallback;
+    }
+  }
+}

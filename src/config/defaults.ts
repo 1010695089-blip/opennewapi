@@ -1,0 +1,29 @@
+export const defaults = {
+  server: {
+    host: '0.0.0.0',
+    port: 3700,
+  },
+  db: {
+    path: './data/openhinge.db',
+  },
+  auth: {
+    passwordHash: '',
+  },
+  encryption: {
+    key: '',
+  },
+  logging: {
+    level: 'info',
+  },
+  watchdog: {
+    enabled: true,
+    intervalMs: 60_000,
+  },
+  queue: {
+    concurrency: 3,
+    pollIntervalMs: 1000,
+  },
+  cron: {
+    enabled: true,
+  },
+} as const;
