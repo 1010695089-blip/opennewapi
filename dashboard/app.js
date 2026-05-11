@@ -1677,34 +1677,33 @@ docker run -d -p 3700:3700 -v ./data:/app/data -v ./config:/app/config openhinge
     openModal('🔵 Add Gemini — OAuth Token', `
       <form onsubmit="OS.saveGeminiOauth(event)" id="gemini-oauth-form">
         <p class="text-muted" style="margin-bottom:12px;font-size:13px">
-          Paste a Google OAuth access token from Gemini CLI, gcloud, or another machine.<br>
-          Include a refresh token to enable auto-refresh when the access token expires.
+          Paste your Google credential JSON file contents below, or just paste a raw access token.<br>
+          Fields are parsed automatically — refresh token and client credentials enable auto-renewal.
         </p>
         <div class="form-group"><label class="form-label">Name</label><input name="name" value="Gemini (OAuth)" placeholder="e.g. Gemini Work Account"></div>
         <div class="form-group">
-          <label class="form-label">Access Token</label>
-          <input type="password" name="access_token" class="input-mono" placeholder="ya29...." required>
-          <p class="form-hint">The Google OAuth access token (starts with ya29.)</p>
+          <label class="form-label">Google Credential JSON or Access Token</label>
+          <textarea name="token_blob" class="input-mono" rows="8" placeholder='Paste the contents of your credential file here, e.g.:
+{
+  "access_token": "ya29...",
+  "refresh_token": "1//0g...",
+  "client_id": "....apps.googleusercontent.com",
+  "client_secret": "GOCSPX-...",
+  "type": "authorized_user"
+}
+
+Or simply paste a raw access token (ya29....)' required></textarea>
+          <p class="form-hint" style="margin-top:6px">
+            Common file locations:<br>
+            &nbsp;• <code>~/.gemini/oauth_creds.json</code> (Gemini CLI)<br>
+            &nbsp;• <code>~/.config/gcloud/application_default_credentials.json</code> (gcloud ADC)<br>
+            &nbsp;• Run <code>gcloud auth print-access-token</code> for a raw token
+          </p>
         </div>
         <div class="form-group">
           <label class="form-label">Project ID <span class="text-muted">(optional)</span></label>
           <input name="project_id" class="input-mono" placeholder="my-gcp-project-id">
           <p class="form-hint">Google Cloud project for Cloud Code Assist. Leave empty for personal Gemini.</p>
-        </div>
-        <div class="form-group">
-          <label class="form-label">Refresh Token <span class="text-muted">(optional)</span></label>
-          <input type="password" name="refresh_token" class="input-mono" placeholder="1//0g...">
-          <p class="form-hint">Enables auto-refresh when the access token expires</p>
-        </div>
-        <div class="form-row">
-          <div class="form-group">
-            <label class="form-label">Client ID <span class="text-muted">(optional)</span></label>
-            <input name="client_id" class="input-mono" placeholder="...apps.googleusercontent.com">
-          </div>
-          <div class="form-group">
-            <label class="form-label">Client Secret <span class="text-muted">(optional)</span></label>
-            <input type="password" name="client_secret" class="input-mono" placeholder="GOCSPX-...">
-          </div>
         </div>
         <div class="form-row">
           <div class="form-group">
@@ -1724,14 +1723,33 @@ docker run -d -p 3700:3700 -v ./data:/app/data -v ./config:/app/config openhinge
   async function saveGeminiOauth(e) {
     e.preventDefault();
     const f = new FormData(e.target);
-    const accessToken = String(f.get('access_token') || '').trim();
+    const blob = String(f.get('token_blob') || '').trim();
     const projectId = String(f.get('project_id') || '').trim();
-    const refreshToken = String(f.get('refresh_token') || '').trim();
-    const clientId = String(f.get('client_id') || '').trim();
-    const clientSecret = String(f.get('client_secret') || '').trim();
+
+    let accessToken = '', refreshToken = '', clientId = '', clientSecret = '', expiresAt = '';
+
+    try {
+      if (blob.startsWith('{')) {
+        const parsed = JSON.parse(blob);
+        // Support application_default_credentials.json, gemini-cli oauth_creds.json,
+        // and arbitrary nested shapes (e.g. { tokens: { access_token, ... } })
+        const inner = parsed.tokens || parsed.credential || parsed;
+        accessToken = inner.access_token || inner.oauth_token || parsed.access_token || '';
+        refreshToken = inner.refresh_token || parsed.refresh_token || '';
+        clientId = inner.client_id || parsed.client_id || '';
+        clientSecret = inner.client_secret || parsed.client_secret || '';
+        expiresAt = String(inner.token_expiry || inner.expires_at || parsed.token_expiry || parsed.expires_at || '');
+      } else {
+        // Raw access token string
+        accessToken = blob;
+      }
+    } catch (err) {
+      toast(`Invalid credential JSON: ${err.message}`, 'error');
+      return;
+    }
 
     if (!accessToken) {
-      toast('Missing access token', 'error');
+      toast('Missing access token — check your JSON or paste a raw ya29.* token', 'error');
       return;
     }
 
@@ -1742,6 +1760,7 @@ docker run -d -p 3700:3700 -v ./data:/app/data -v ./config:/app/config openhinge
     if (refreshToken) credentials.refresh_token = refreshToken;
     if (clientId) credentials.client_id = clientId;
     if (clientSecret) credentials.client_secret = clientSecret;
+    if (expiresAt && expiresAt !== 'undefined') credentials.expires_at = expiresAt;
 
     const model = f.get('model') || 'gemini-3-flash-preview';
     await api('/admin/providers', { method: 'POST', body: {
