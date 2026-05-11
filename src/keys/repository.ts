@@ -29,8 +29,8 @@ export function createKey(input: CreateKeyInput): ApiKeyWithSecret {
   const db = getDb();
 
   db.prepare(`
-    INSERT INTO api_keys (id, name, key_hash, key_prefix, api_format, soul_id, rate_limit_rpm, daily_budget_cents, monthly_budget_cents, expires_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    INSERT INTO api_keys (id, name, key_hash, key_prefix, api_format, soul_id, rate_limit_rpm, daily_budget_cents, monthly_budget_cents, markup_rate, expires_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `).run(
     id, input.name, keyHash, prefix,
     input.api_format || 'openai',
@@ -38,6 +38,7 @@ export function createKey(input: CreateKeyInput): ApiKeyWithSecret {
     input.rate_limit_rpm ?? 60,
     input.daily_budget_cents ?? null,
     input.monthly_budget_cents ?? null,
+    input.markup_rate ?? 1.0,
     input.expires_at ?? null,
   );
 
@@ -87,6 +88,7 @@ export function updateKey(id: string, input: UpdateKeyInput): ApiKey | null {
   if (input.rate_limit_rpm !== undefined) { fields.push('rate_limit_rpm = ?'); values.push(input.rate_limit_rpm); }
   if ('daily_budget_cents' in input) { fields.push('daily_budget_cents = ?'); values.push(input.daily_budget_cents ?? null); }
   if ('monthly_budget_cents' in input) { fields.push('monthly_budget_cents = ?'); values.push(input.monthly_budget_cents ?? null); }
+  if (input.markup_rate !== undefined) { fields.push('markup_rate = ?'); values.push(input.markup_rate); }
   if ('expires_at' in input) { fields.push('expires_at = ?'); values.push(input.expires_at ?? null); }
 
   if (fields.length > 0) {

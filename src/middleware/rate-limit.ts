@@ -1,5 +1,7 @@
 import type { FastifyRequest, FastifyReply } from 'fastify';
 import { RateLimitError } from '../utils/errors.js';
+import { logUsage } from '../cost/index.js';
+import { generateId } from '../utils/crypto.js';
 
 // Simple in-memory sliding window rate limiter
 const windows = new Map<string, { count: number; resetAt: number }>();
@@ -33,6 +35,20 @@ export async function rateLimitMiddleware(request: FastifyRequest, reply: Fastif
   reply.header('x-ratelimit-reset', Math.ceil(window.resetAt / 1000));
 
   if (window.count > limit) {
-    throw new RateLimitError(`Rate limit exceeded: ${limit} requests per minute`);
+    const msg = `Rate limit exceeded: ${limit} requests per minute`;
+    logUsage({
+      request_id: generateId(),
+      api_key_id: key.id,
+      soul_id: '',
+      provider_id: '',
+      model: '',
+      input_tokens: 0,
+      output_tokens: 0,
+      cost_cents: 0,
+      latency_ms: 0,
+      status: 'rate_limited',
+      error_message: msg,
+    });
+    throw new RateLimitError(msg);
   }
 }

@@ -10,6 +10,7 @@ export interface ApiKey {
   rate_limit_rpm: number;
   daily_budget_cents: number | null;
   monthly_budget_cents: number | null;
+  markup_rate: number;
   expires_at: string | null;
   is_enabled: boolean;
   last_used_at: string | null;
@@ -25,6 +26,7 @@ export interface CreateKeyInput {
   rate_limit_rpm?: number;
   daily_budget_cents?: number;
   monthly_budget_cents?: number;
+  markup_rate?: number;
   expires_at?: string;
 }
 
@@ -33,6 +35,7 @@ export interface UpdateKeyInput {
   rate_limit_rpm?: number;
   daily_budget_cents?: number | null;
   monthly_budget_cents?: number | null;
+  markup_rate?: number;
   expires_at?: string | null;
   soul_ids?: string[];
 }

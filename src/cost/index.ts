@@ -19,26 +19,31 @@ export interface UsageEntry {
 export function logUsage(entry: UsageEntry): void {
   const db = getDb();
 
+  const keyRow = db.prepare('SELECT markup_rate FROM api_keys WHERE id = ?').get(entry.api_key_id) as any;
+  const markupRate: number = keyRow?.markup_rate ?? 1.0;
+  const billedCostCents = entry.cost_cents * markupRate;
+
   db.prepare(`
-    INSERT INTO usage_logs (request_id, api_key_id, soul_id, provider_id, model, input_tokens, output_tokens, cost_cents, latency_ms, status, error_message)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    INSERT INTO usage_logs (request_id, api_key_id, soul_id, provider_id, model, input_tokens, output_tokens, cost_cents, billed_cost_cents, latency_ms, status, error_message)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `).run(
     entry.request_id, entry.api_key_id, entry.soul_id, entry.provider_id,
     entry.model, entry.input_tokens, entry.output_tokens, entry.cost_cents,
-    entry.latency_ms, entry.status, entry.error_message || null,
+    billedCostCents, entry.latency_ms, entry.status, entry.error_message || null,
   );
 
   // Upsert daily aggregate
   const today = new Date().toISOString().slice(0, 10);
   db.prepare(`
-    INSERT INTO cost_daily (date, api_key_id, soul_id, provider_id, total_requests, total_input_tokens, total_output_tokens, total_cost_cents)
-    VALUES (?, ?, ?, ?, 1, ?, ?, ?)
+    INSERT INTO cost_daily (date, api_key_id, soul_id, provider_id, total_requests, total_input_tokens, total_output_tokens, total_cost_cents, total_billed_cost_cents)
+    VALUES (?, ?, ?, ?, 1, ?, ?, ?, ?)
     ON CONFLICT(date, api_key_id, soul_id, provider_id) DO UPDATE SET
       total_requests = total_requests + 1,
       total_input_tokens = total_input_tokens + excluded.total_input_tokens,
       total_output_tokens = total_output_tokens + excluded.total_output_tokens,
-      total_cost_cents = total_cost_cents + excluded.total_cost_cents
-  `).run(today, entry.api_key_id, entry.soul_id, entry.provider_id, entry.input_tokens, entry.output_tokens, entry.cost_cents);
+      total_cost_cents = total_cost_cents + excluded.total_cost_cents,
+      total_billed_cost_cents = total_billed_cost_cents + excluded.total_billed_cost_cents
+  `).run(today, entry.api_key_id, entry.soul_id, entry.provider_id, entry.input_tokens, entry.output_tokens, entry.cost_cents, billedCostCents);
 }
 
 export function getDailySpend(keyId: string, date?: string): number {
@@ -60,7 +65,8 @@ export function getMonthlySpend(keyId: string): number {
 export function getCostReport(days = 30): any[] {
   return getDb().prepare(`
     SELECT date, SUM(total_requests) as requests, SUM(total_input_tokens) as input_tokens,
-           SUM(total_output_tokens) as output_tokens, SUM(total_cost_cents) as cost_cents
+           SUM(total_output_tokens) as output_tokens, SUM(total_cost_cents) as cost_cents,
+           SUM(total_billed_cost_cents) as billed_cost_cents
     FROM cost_daily
     WHERE date >= date('now', '-' || ? || ' days')
     GROUP BY date ORDER BY date DESC
@@ -70,7 +76,8 @@ export function getCostReport(days = 30): any[] {
 export function getCostBySoul(days = 30): any[] {
   return getDb().prepare(`
     SELECT s.name as soul_name, s.slug, SUM(c.total_requests) as requests,
-           SUM(c.total_cost_cents) as cost_cents
+           SUM(c.total_cost_cents) as cost_cents,
+           SUM(c.total_billed_cost_cents) as billed_cost_cents
     FROM cost_daily c JOIN souls s ON c.soul_id = s.id
     WHERE c.date >= date('now', '-' || ? || ' days')
     GROUP BY c.soul_id ORDER BY cost_cents DESC
@@ -130,7 +137,8 @@ export function queryLogs(q: LogQuery): { data: any[]; total: number; page: numb
   const sortCols: Record<string, string> = {
     created_at: 'u.created_at', latency_ms: 'u.latency_ms',
     input_tokens: 'u.input_tokens', output_tokens: 'u.output_tokens',
-    cost_cents: 'u.cost_cents', model: 'u.model', status: 'u.status',
+    cost_cents: 'u.cost_cents', billed_cost_cents: 'u.billed_cost_cents',
+    model: 'u.model', status: 'u.status',
   };
   const sortCol = sortCols[q.sort || 'created_at'] || 'u.created_at';
   const sortOrder = q.order === 'asc' ? 'ASC' : 'DESC';

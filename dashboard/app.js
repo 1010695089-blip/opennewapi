@@ -578,10 +578,11 @@ const OS = (() => {
         <div class="card">
           <div class="card-header"><h3>Daily Breakdown</h3></div>
           ${report.data?.length ? `<div class="table-wrapper" style="border:none"><table>
-            <thead><tr><th>Date</th><th>Requests</th><th>Input</th><th>Output</th></tr></thead>
+            <thead><tr><th>Date</th><th>Requests</th><th>Input</th><th>Output</th><th title="应收金额（成本 × 倍率）">应收金额</th></tr></thead>
             <tbody>${report.data.map(r => `<tr>
               <td>${r.date}</td><td class="text-mono">${num(r.requests)}</td>
               <td class="text-mono">${num(r.input_tokens)}</td><td class="text-mono">${num(r.output_tokens)}</td>
+              <td class="text-mono">${r.billed_cost_cents > 0 ? '$' + (r.billed_cost_cents / 100).toFixed(4) : '—'}</td>
             </tr>`).join('')}</tbody>
           </table></div>` : '<p class="text-muted text-sm" style="padding:16px">No data</p>'}
         </div>
@@ -589,9 +590,11 @@ const OS = (() => {
         <div class="card">
           <div class="card-header"><h3>Usage by Profile</h3></div>
           ${bySoul.data?.length ? `<div class="table-wrapper" style="border:none"><table>
-            <thead><tr><th>Profile</th><th>Requests</th><th>Tokens</th></tr></thead>
+            <thead><tr><th>Profile</th><th>Requests</th><th>Tokens</th><th title="应收金额（成本 × 倍率）">应收金额</th></tr></thead>
             <tbody>${bySoul.data.map(s => `<tr>
-              <td><code>${h(s.slug)}</code></td><td class="text-mono">${num(s.requests)}</td><td class="text-mono">${num((s.input_tokens||0)+(s.output_tokens||0))}</td>
+              <td><code>${h(s.slug)}</code></td><td class="text-mono">${num(s.requests)}</td>
+              <td class="text-mono">${num((s.input_tokens||0)+(s.output_tokens||0))}</td>
+              <td class="text-mono">${s.billed_cost_cents > 0 ? '$' + (s.billed_cost_cents / 100).toFixed(4) : '—'}</td>
             </tr>`).join('')}</tbody>
           </table></div>` : '<p class="text-muted text-sm" style="padding:16px">No data</p>'}
         </div>
@@ -682,6 +685,7 @@ const OS = (() => {
           <col class="traffic-col-number">
           <col class="traffic-col-number">
           <col class="traffic-col-latency">
+          <col class="traffic-col-number">
           <col class="traffic-col-status">
         </colgroup>
         <thead><tr>
@@ -693,6 +697,7 @@ const OS = (() => {
           <th class="${thClass('input_tokens')}" onclick="OS.logSort('input_tokens')">In${sortArrow('input_tokens')}</th>
           <th class="${thClass('output_tokens')}" onclick="OS.logSort('output_tokens')">Out${sortArrow('output_tokens')}</th>
           <th class="${thClass('latency_ms')}" onclick="OS.logSort('latency_ms')">Latency${sortArrow('latency_ms')}</th>
+          <th class="${thClass('billed_cost_cents')}" onclick="OS.logSort('billed_cost_cents')" title="应收金额（成本 × 倍率）">应收${sortArrow('billed_cost_cents')}</th>
           <th class="${thClass('status')}" onclick="OS.logSort('status')">Status${sortArrow('status')}</th>
         </tr></thead>
         <tbody>${data.map(l => `<tr class="log-row" onclick="OS.logDetail('${h(l.request_id || '')}')">
@@ -704,6 +709,7 @@ const OS = (() => {
           <td class="text-mono text-sm traffic-number">${num(l.input_tokens)}</td>
           <td class="text-mono text-sm traffic-number">${num(l.output_tokens)}</td>
           <td class="text-mono text-sm traffic-latency">${l.latency_ms}ms</td>
+          <td class="text-mono text-sm traffic-number">${l.billed_cost_cents > 0 ? '$' + (l.billed_cost_cents / 100).toFixed(4) : '—'}</td>
           <td>${l.status === 'success' ? '<span class="badge badge-success">OK</span>' : `<span class="badge badge-danger">${h(l.status)}</span>`}</td>
         </tr>`).join('')}</tbody>
       </table></div>` : emptyState('No requests found', hasFilters ? 'Try adjusting your filters.' : 'Send a request to see it logged here.')}
@@ -2400,6 +2406,11 @@ Or simply paste a raw access token (ya29....)' required></textarea>
           <label class="form-label">Rate Limit (per min)</label>
           <input name="rpm" id="key-rpm" type="number" value="60">
         </div>
+        <div class="form-group">
+          <label class="form-label">计费倍率 (Markup Rate)</label>
+          <input name="markup_rate" id="key-markup-rate" type="number" step="0.01" min="0" value="1.0">
+          <p class="form-hint">实际成本 × 倍率 = 向用户收取金额。1.0 = 原价，0.35 = 35% 折扣，1.35 = 加价 35%</p>
+        </div>
         <button type="button" class="btn btn-primary" style="width:100%;margin-top:8px" onclick="OS.saveKey()">Generate Key</button>
       </div>
     `);
@@ -2516,6 +2527,8 @@ Or simply paste a raw access token (ya29....)' required></textarea>
       if (!name) { toast('Enter a name', 'error'); return; }
       const format = document.getElementById('key-format')?.value || 'openai';
       const rpm = parseInt(document.getElementById('key-rpm')?.value) || 60;
+      const markupRateRaw = document.getElementById('key-markup-rate')?.value?.trim();
+      const markupRate = markupRateRaw ? parseFloat(markupRateRaw) : 1.0;
       const allSouls = document.getElementById('key-all-souls')?.checked ?? true;
       const soulIds = allSouls ? [] : Array.from(document.querySelectorAll('.soul-checkbox:checked')).map(cb => cb.value);
 
@@ -2523,6 +2536,7 @@ Or simply paste a raw access token (ya29....)' required></textarea>
         name,
         api_format: format,
         rate_limit_rpm: rpm,
+        markup_rate: markupRate,
       };
       if (soulIds.length > 0) payload.soul_ids = soulIds;
       console.log('saveKey payload:', JSON.stringify(payload));
@@ -2647,6 +2661,7 @@ Or simply paste a raw access token (ya29....)' required></textarea>
       const expiresValue = k.expires_at ? k.expires_at.slice(0, 16) : '';
       const dailyBudget = k.daily_budget_cents != null ? (k.daily_budget_cents / 100).toFixed(2) : '';
       const monthlyBudget = k.monthly_budget_cents != null ? (k.monthly_budget_cents / 100).toFixed(2) : '';
+      const markupRateValue = k.markup_rate != null ? k.markup_rate : 1.0;
 
       openModal('Edit Key', `
         <div id="edit-key-form" data-key-id="${h(k.id)}">
@@ -2666,6 +2681,11 @@ Or simply paste a raw access token (ya29....)' required></textarea>
           <div class="form-group">
             <label class="form-label">Monthly Budget (USD, leave blank for unlimited)</label>
             <input id="edit-key-monthly-budget" type="number" step="0.01" min="0" value="${monthlyBudget}" placeholder="e.g. 50.00">
+          </div>
+          <div class="form-group">
+            <label class="form-label">计费倍率 (Markup Rate)</label>
+            <input id="edit-key-markup-rate" type="number" step="0.01" min="0" value="${markupRateValue}">
+            <p class="form-hint">实际成本 × 倍率 = 向用户收取金额。1.0 = 原价，0.35 = 35% 折扣，1.35 = 加价 35%</p>
           </div>
           <div class="form-group">
             <label class="form-label">Expires At (leave blank for never)</label>
@@ -2702,6 +2722,7 @@ Or simply paste a raw access token (ya29....)' required></textarea>
 
       const dailyRaw = document.getElementById('edit-key-daily-budget')?.value?.trim();
       const monthlyRaw = document.getElementById('edit-key-monthly-budget')?.value?.trim();
+      const markupRateRaw = document.getElementById('edit-key-markup-rate')?.value?.trim();
       const expiresRaw = document.getElementById('edit-key-expires')?.value?.trim();
 
       const allSouls = document.getElementById('edit-key-all-souls')?.checked ?? true;
@@ -2712,6 +2733,7 @@ Or simply paste a raw access token (ya29....)' required></textarea>
         rate_limit_rpm: rpm,
         daily_budget_cents: dailyRaw ? Math.round(parseFloat(dailyRaw) * 100) : null,
         monthly_budget_cents: monthlyRaw ? Math.round(parseFloat(monthlyRaw) * 100) : null,
+        markup_rate: markupRateRaw ? parseFloat(markupRateRaw) : 1.0,
         expires_at: expiresRaw ? new Date(expiresRaw).toISOString() : null,
         soul_ids: soulIds,
       };
