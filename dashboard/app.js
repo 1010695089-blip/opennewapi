@@ -1547,6 +1547,15 @@ docker run -d -p 3700:3700 -v ./data:/app/data -v ./config:/app/config openhinge
           </div>
         </button>
         ` : ''}
+        ${type === 'gemini' ? `
+        <button class="option-card" onclick="OS.showGeminiOauthForm()">
+          <div class="option-card-icon"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0110 0v4"/></svg></div>
+          <div class="option-card-text">
+            <div class="option-card-title">Paste OAuth Token</div>
+            <div class="option-card-desc">Import Google OAuth token manually</div>
+          </div>
+        </button>
+        ` : ''}
       </div>
     `);
   }
@@ -1662,6 +1671,87 @@ docker run -d -p 3700:3700 -v ./data:/app/data -v ./config:/app/config openhinge
       priority: parseInt(f.get('priority')) || 0,
     }});
     closeModal(); toast('OpenAI OAuth upstream added', 'success'); loaders.providers();
+  }
+
+  function showGeminiOauthForm() {
+    openModal('🔵 Add Gemini — OAuth Token', `
+      <form onsubmit="OS.saveGeminiOauth(event)" id="gemini-oauth-form">
+        <p class="text-muted" style="margin-bottom:12px;font-size:13px">
+          Paste a Google OAuth access token from Gemini CLI, gcloud, or another machine.<br>
+          Include a refresh token to enable auto-refresh when the access token expires.
+        </p>
+        <div class="form-group"><label class="form-label">Name</label><input name="name" value="Gemini (OAuth)" placeholder="e.g. Gemini Work Account"></div>
+        <div class="form-group">
+          <label class="form-label">Access Token</label>
+          <input type="password" name="access_token" class="input-mono" placeholder="ya29...." required>
+          <p class="form-hint">The Google OAuth access token (starts with ya29.)</p>
+        </div>
+        <div class="form-group">
+          <label class="form-label">Project ID <span class="text-muted">(optional)</span></label>
+          <input name="project_id" class="input-mono" placeholder="my-gcp-project-id">
+          <p class="form-hint">Google Cloud project for Cloud Code Assist. Leave empty for personal Gemini.</p>
+        </div>
+        <div class="form-group">
+          <label class="form-label">Refresh Token <span class="text-muted">(optional)</span></label>
+          <input type="password" name="refresh_token" class="input-mono" placeholder="1//0g...">
+          <p class="form-hint">Enables auto-refresh when the access token expires</p>
+        </div>
+        <div class="form-row">
+          <div class="form-group">
+            <label class="form-label">Client ID <span class="text-muted">(optional)</span></label>
+            <input name="client_id" class="input-mono" placeholder="...apps.googleusercontent.com">
+          </div>
+          <div class="form-group">
+            <label class="form-label">Client Secret <span class="text-muted">(optional)</span></label>
+            <input type="password" name="client_secret" class="input-mono" placeholder="GOCSPX-...">
+          </div>
+        </div>
+        <div class="form-row">
+          <div class="form-group">
+            <label class="form-label">Default Model</label>
+            <input name="model" value="gemini-3-flash-preview" class="input-mono">
+          </div>
+          <div class="form-group">
+            <label class="form-label">Priority</label>
+            <input name="priority" type="number" value="50">
+          </div>
+        </div>
+        <button type="submit" class="btn btn-primary" style="width:100%;margin-top:8px">Add OAuth Provider</button>
+      </form>
+    `);
+  }
+
+  async function saveGeminiOauth(e) {
+    e.preventDefault();
+    const f = new FormData(e.target);
+    const accessToken = String(f.get('access_token') || '').trim();
+    const projectId = String(f.get('project_id') || '').trim();
+    const refreshToken = String(f.get('refresh_token') || '').trim();
+    const clientId = String(f.get('client_id') || '').trim();
+    const clientSecret = String(f.get('client_secret') || '').trim();
+
+    if (!accessToken) {
+      toast('Missing access token', 'error');
+      return;
+    }
+
+    const credentials = {
+      oauth_token: JSON.stringify({ token: accessToken, projectId: projectId || '' }),
+      source: 'manual_oauth',
+    };
+    if (refreshToken) credentials.refresh_token = refreshToken;
+    if (clientId) credentials.client_id = clientId;
+    if (clientSecret) credentials.client_secret = clientSecret;
+
+    const model = f.get('model') || 'gemini-3-flash-preview';
+    await api('/admin/providers', { method: 'POST', body: {
+      name: f.get('name') || 'Gemini (OAuth)',
+      type: 'gemini',
+      credentials,
+      provider_config: { default_model: model },
+      priority: parseInt(f.get('priority')) || 0,
+    }});
+    closeModal(); toast('Gemini OAuth upstream added', 'success'); loaders.providers();
   }
 
   async function claudeOAuthLogin() {
@@ -2802,7 +2892,7 @@ docker run -d -p 3700:3700 -v ./data:/app/data -v ./config:/app/config openhinge
   return {
     closeModal, toast, navigate, welcomeSubmit, welcomeGo,
     setLanguage,
-    addProviderModal, addProviderStep2, showApiKeyForm, showOpenAIOauthForm, saveOpenAIOauth, showClaudeOauthForm, saveClaudeOauth, claudeOAuthLogin, saveProvider, editProviderModal, updateProvider, deleteProvider, healthCheck, healthCheckOne, fetchModels, onProviderTypeChange, quickAdd, openApiPage,
+    addProviderModal, addProviderStep2, showApiKeyForm, showOpenAIOauthForm, saveOpenAIOauth, showGeminiOauthForm, saveGeminiOauth, showClaudeOauthForm, saveClaudeOauth, claudeOAuthLogin, saveProvider, editProviderModal, updateProvider, deleteProvider, healthCheck, healthCheckOne, fetchModels, onProviderTypeChange, quickAdd, openApiPage,
     addSoulModal, saveSoul, editSoulModal, deleteSoul, onSoulProviderChange,
     createKeyModal, createApiKeyForm, createOpenClawKeyForm, saveOpenClawKey, saveKey, revokeKey, reactivateKey, deleteKey, toggleAllSouls, autoConnect, disconnectApp,
     saveCloudflare, saveSettings, changePassword, scrollDoc,
