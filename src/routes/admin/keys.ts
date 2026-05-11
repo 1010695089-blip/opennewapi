@@ -17,6 +17,23 @@ export async function keyAdminRoutes(app: FastifyInstance): Promise<void> {
     }
   });
 
+  app.get<{ Params: { id: string } }>('/admin/keys/:id', async (request, reply) => {
+    const key = keys.getKeyById(request.params.id);
+    if (!key) return reply.code(404).send({ error: { code: 'NOT_FOUND', message: 'Key not found' } });
+    return { data: key };
+  });
+
+  app.patch<{ Params: { id: string }; Body: any }>('/admin/keys/:id', async (request, reply) => {
+    try {
+      const updated = keys.updateKey(request.params.id, request.body as any);
+      if (!updated) return reply.code(404).send({ error: { code: 'NOT_FOUND', message: 'Key not found' } });
+      return { data: updated };
+    } catch (err: any) {
+      request.log.error({ err: err.message, body: request.body }, 'Key update failed');
+      reply.code(500).send({ error: { code: 'KEY_UPDATE_ERROR', message: err.message } });
+    }
+  });
+
   app.delete<{ Params: { id: string } }>('/admin/keys/:id', async (request) => {
     const ok = keys.deleteKey(request.params.id);
     return { ok };

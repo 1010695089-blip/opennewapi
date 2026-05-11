@@ -1,6 +1,6 @@
 import { getDb } from '../db/index.js';
 import { generateId, generateApiKey, hashApiKey, verifyApiKey } from '../utils/crypto.js';
-import type { ApiKey, CreateKeyInput, ApiKeyWithSecret } from './types.js';
+import type { ApiKey, CreateKeyInput, UpdateKeyInput, ApiKeyWithSecret } from './types.js';
 
 function rowToKey(row: any): ApiKey {
   const db = getDb();
@@ -76,6 +76,33 @@ export function validateKey(rawKey: string): ApiKey | null {
   }
 
   return null;
+}
+
+export function updateKey(id: string, input: UpdateKeyInput): ApiKey | null {
+  const db = getDb();
+  const fields: string[] = [];
+  const values: any[] = [];
+
+  if (input.name !== undefined) { fields.push('name = ?'); values.push(input.name); }
+  if (input.rate_limit_rpm !== undefined) { fields.push('rate_limit_rpm = ?'); values.push(input.rate_limit_rpm); }
+  if ('daily_budget_cents' in input) { fields.push('daily_budget_cents = ?'); values.push(input.daily_budget_cents ?? null); }
+  if ('monthly_budget_cents' in input) { fields.push('monthly_budget_cents = ?'); values.push(input.monthly_budget_cents ?? null); }
+  if ('expires_at' in input) { fields.push('expires_at = ?'); values.push(input.expires_at ?? null); }
+
+  if (fields.length > 0) {
+    values.push(id);
+    db.prepare(`UPDATE api_keys SET ${fields.join(', ')} WHERE id = ?`).run(...values);
+  }
+
+  if (input.soul_ids !== undefined) {
+    db.prepare('DELETE FROM api_key_souls WHERE api_key_id = ?').run(id);
+    const insertSoul = db.prepare('INSERT INTO api_key_souls (api_key_id, soul_id) VALUES (?, ?)');
+    for (const soulId of input.soul_ids) {
+      insertSoul.run(id, soulId);
+    }
+  }
+
+  return getKeyById(id);
 }
 
 export function revokeKey(id: string): boolean {

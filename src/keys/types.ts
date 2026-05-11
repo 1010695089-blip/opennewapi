@@ -28,6 +28,15 @@ export interface CreateKeyInput {
   expires_at?: string;
 }
 
+export interface UpdateKeyInput {
+  name?: string;
+  rate_limit_rpm?: number;
+  daily_budget_cents?: number | null;
+  monthly_budget_cents?: number | null;
+  expires_at?: string | null;
+  soul_ids?: string[];
+}
+
 export interface ApiKeyWithSecret extends ApiKey {
   key: string; // Only returned on creation
 }

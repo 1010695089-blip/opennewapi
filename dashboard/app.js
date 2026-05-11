@@ -542,6 +542,9 @@ const OS = (() => {
             </button>` : `<button class="btn btn-ghost btn-icon btn-sm" title="Reactivate" onclick="OS.reactivateKey('${k.id}')">
               <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="var(--success)" stroke-width="2"><path d="M1 4v6h6"/><path d="M3.51 15a9 9 0 1 0 2.13-9.36L1 10"/></svg>
             </button>`}
+            <button class="btn btn-ghost btn-icon btn-sm" title="Edit" onclick="OS.editKeyModal('${k.id}')">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>
+            </button>
             <button class="btn btn-ghost btn-icon btn-sm" title="Delete" onclick="OS.deleteKey('${k.id}')">
               <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>
             </button>
@@ -2611,6 +2614,116 @@ Or simply paste a raw access token (ya29....)' required></textarea>
     toast('Key deleted', 'success'); loaders.keys();
   }
 
+  async function editKeyModal(id) {
+    try {
+      const [{ data: k }] = await Promise.all([api(`/admin/keys/${id}`), loadSoulsList(), loadProvidersList()]);
+      if (!k) { toast('Key not found', 'error'); return; }
+
+      const soulCheckboxes = _souls.length > 0 ? `
+        <div class="form-group">
+          <label class="form-label">Profile Access</label>
+          <div style="margin-bottom:6px">
+            <label style="display:flex;align-items:center;gap:6px;cursor:pointer;font-size:13px">
+              <input type="checkbox" id="edit-key-all-souls" onchange="OS.toggleEditAllSouls(this.checked)" style="width:auto"${(!k.soul_ids || k.soul_ids.length === 0) ? ' checked' : ''}>
+              <strong>All Profiles</strong>
+            </label>
+          </div>
+          <div id="edit-key-soul-list" style="max-height:200px;overflow-y:auto;border:1px solid var(--border);border-radius:var(--radius-sm);padding:8px;display:flex;flex-direction:column;gap:4px${(!k.soul_ids || k.soul_ids.length === 0) ? ';display:none' : ''}">
+            ${_souls.map(s => {
+              const sp = _providers.find(p => p.id === s.provider_id);
+              const provLabel = sp ? ` → ${h(sp.name)}` : '';
+              const checked = k.soul_ids && k.soul_ids.includes(s.id) ? ' checked' : '';
+              return `
+              <label style="display:flex;align-items:center;gap:6px;cursor:pointer;font-size:13px;padding:4px 0">
+                <input type="checkbox" name="edit_soul_ids" value="${h(s.id)}" style="width:auto" class="edit-soul-checkbox"${checked}>
+                ${h(s.name)} <span class="text-muted text-sm">(${h(s.slug)}${provLabel})</span>
+              </label>`;
+            }).join('')}
+          </div>
+          <p class="form-hint">Select which profiles this key can access.</p>
+        </div>
+      ` : '';
+
+      const expiresValue = k.expires_at ? k.expires_at.slice(0, 16) : '';
+      const dailyBudget = k.daily_budget_cents != null ? (k.daily_budget_cents / 100).toFixed(2) : '';
+      const monthlyBudget = k.monthly_budget_cents != null ? (k.monthly_budget_cents / 100).toFixed(2) : '';
+
+      openModal('Edit Key', `
+        <div id="edit-key-form" data-key-id="${h(k.id)}">
+          <div class="form-group">
+            <label class="form-label">Name</label>
+            <input id="edit-key-name" value="${h(k.name)}" placeholder="Key name">
+          </div>
+          ${soulCheckboxes}
+          <div class="form-group">
+            <label class="form-label">Rate Limit (per min)</label>
+            <input id="edit-key-rpm" type="number" value="${k.rate_limit_rpm ?? 60}">
+          </div>
+          <div class="form-group">
+            <label class="form-label">Daily Budget (USD, leave blank for unlimited)</label>
+            <input id="edit-key-daily-budget" type="number" step="0.01" min="0" value="${dailyBudget}" placeholder="e.g. 5.00">
+          </div>
+          <div class="form-group">
+            <label class="form-label">Monthly Budget (USD, leave blank for unlimited)</label>
+            <input id="edit-key-monthly-budget" type="number" step="0.01" min="0" value="${monthlyBudget}" placeholder="e.g. 50.00">
+          </div>
+          <div class="form-group">
+            <label class="form-label">Expires At (leave blank for never)</label>
+            <input id="edit-key-expires" type="datetime-local" value="${expiresValue}">
+          </div>
+          <button type="button" class="btn btn-primary" style="width:100%;margin-top:8px" onclick="OS.saveEditKey()">Save Changes</button>
+        </div>
+      `);
+
+      // Ensure soul list display state is correct after DOM insertion
+      const soulList = document.getElementById('edit-key-soul-list');
+      if (soulList) {
+        soulList.style.display = (!k.soul_ids || k.soul_ids.length === 0) ? 'none' : 'flex';
+      }
+    } catch (err) { console.error('editKeyModal error:', err); toast('Error: ' + err.message, 'error'); }
+  }
+
+  function toggleEditAllSouls(checked) {
+    const list = document.getElementById('edit-key-soul-list');
+    if (!list) return;
+    list.style.display = checked ? 'none' : 'flex';
+    if (checked) list.querySelectorAll('.edit-soul-checkbox').forEach(cb => cb.checked = false);
+  }
+
+  async function saveEditKey() {
+    try {
+      const form = document.getElementById('edit-key-form');
+      if (!form) return;
+      const id = form.dataset.keyId;
+      const name = document.getElementById('edit-key-name')?.value?.trim();
+      if (!name) { toast('Name is required', 'error'); return; }
+
+      const rpm = parseInt(document.getElementById('edit-key-rpm')?.value) || 60;
+
+      const dailyRaw = document.getElementById('edit-key-daily-budget')?.value?.trim();
+      const monthlyRaw = document.getElementById('edit-key-monthly-budget')?.value?.trim();
+      const expiresRaw = document.getElementById('edit-key-expires')?.value?.trim();
+
+      const allSouls = document.getElementById('edit-key-all-souls')?.checked ?? true;
+      const soulIds = allSouls ? [] : Array.from(document.querySelectorAll('.edit-soul-checkbox:checked')).map(cb => cb.value);
+
+      const payload = {
+        name,
+        rate_limit_rpm: rpm,
+        daily_budget_cents: dailyRaw ? Math.round(parseFloat(dailyRaw) * 100) : null,
+        monthly_budget_cents: monthlyRaw ? Math.round(parseFloat(monthlyRaw) * 100) : null,
+        expires_at: expiresRaw ? new Date(expiresRaw).toISOString() : null,
+        soul_ids: soulIds,
+      };
+
+      const res = await api(`/admin/keys/${id}`, { method: 'PATCH', body: payload });
+      if (res.error) { toast(res.error.message || 'Update failed', 'error'); return; }
+      toast('Key updated', 'success');
+      closeModal();
+      loaders.keys();
+    } catch (err) { console.error('saveEditKey error:', err); toast('Error: ' + err.message, 'error'); }
+  }
+
   // Cloudflare
   async function cfConnect() {
     const tokenInput = document.getElementById('cf-api-token');
@@ -2913,7 +3026,7 @@ Or simply paste a raw access token (ya29....)' required></textarea>
     setLanguage,
     addProviderModal, addProviderStep2, showApiKeyForm, showOpenAIOauthForm, saveOpenAIOauth, showGeminiOauthForm, saveGeminiOauth, showClaudeOauthForm, saveClaudeOauth, claudeOAuthLogin, saveProvider, editProviderModal, updateProvider, deleteProvider, healthCheck, healthCheckOne, fetchModels, onProviderTypeChange, quickAdd, openApiPage,
     addSoulModal, saveSoul, editSoulModal, deleteSoul, onSoulProviderChange,
-    createKeyModal, createApiKeyForm, createOpenClawKeyForm, saveOpenClawKey, saveKey, revokeKey, reactivateKey, deleteKey, toggleAllSouls, autoConnect, disconnectApp,
+    createKeyModal, createApiKeyForm, createOpenClawKeyForm, saveOpenClawKey, saveKey, revokeKey, reactivateKey, deleteKey, toggleAllSouls, editKeyModal, toggleEditAllSouls, saveEditKey, autoConnect, disconnectApp,
     saveCloudflare, saveSettings, changePassword, scrollDoc,
     cfConnect, cfZoneChange,
     provFilter, provClearFilters, provToggle, provSelectAll, provSelectNone, provBulk,
